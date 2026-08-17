@@ -24,6 +24,12 @@ guaranteed non-nil by the enterprise `RoutesLoader` implementation, though this
 design defensively skips (logs + continues) a backend with a nil manifest
 rather than assuming the guarantee always holds.
 
+`pkg/router/AGENTS.md` states a hard constraint: **"No k8s apimachinery/klog
+deps. The whole point is a stdlib-only router."** Both discovery documents are
+therefore built from hand-rolled local structs with JSON tags matching the
+real k8s wire shapes, not by importing `metav1`/`kube-openapi` types — see
+Components below.
+
 ## Decisions
 
 1. **No cross-group OpenAPI schema merge, ever.** k8s's real `/openapi/v3` root
@@ -78,15 +84,54 @@ openapiIndex atomic.Pointer[cachedDoc]
 
 ### Builders (pure functions, easy to unit test against fake `Backend`s)
 
+`pkg/router/AGENTS.md` is explicit: **"No k8s apimachinery/klog deps. The whole
+point is a stdlib-only router."** That rules out `k8s.io/apimachinery/pkg/apis/meta/v1`
+(`APIGroupList`) and `k8s.io/kube-openapi/pkg/handler3` (`OpenAPIV3Discovery`) —
+the latter isn't isolated either: its own file imports `k8s.io/klog/v2`,
+`pkg/cached`, `pkg/common`, `pkg/spec3`, `gnostic-models/openapiv3`,
+`google/uuid`, `munnerz/goautoneg`, and `google.golang.org/protobuf/proto`; Go
+compiles the whole package, so importing it for two structs drags in all of
+that regardless. Instead, define local structs with identical JSON tags —
+wire-compatible with kubectl/client-go's discovery cache (only the JSON shape
+matters to them), zero new dependencies:
+
 ```go
+// Local mirrors of the k8s discovery/openapi JSON shapes. Field names/tags
+// match metav1.APIGroupList / kube-openapi's handler3.OpenAPIV3Discovery
+// exactly so client-go and kubectl parse them unmodified; pkg/router stays
+// stdlib-only per AGENTS.md (no apimachinery/klog import).
+
+type apiGroupList struct {
+    Kind       string     `json:"kind"`
+    APIVersion string     `json:"apiVersion"`
+    Groups     []apiGroup `json:"groups"`
+}
+
+type apiGroup struct {
+    Name             string                   `json:"name"`
+    Versions         []groupVersionForDiscovery `json:"versions"`
+    PreferredVersion groupVersionForDiscovery   `json:"preferredVersion,omitempty"`
+}
+
+type groupVersionForDiscovery struct {
+    GroupVersion string `json:"groupVersion"`
+    Version      string `json:"version"`
+}
+
+type openAPIV3Discovery struct {
+    Paths map[string]openAPIV3DiscoveryGroupVersion `json:"paths"`
+}
+
+type openAPIV3DiscoveryGroupVersion struct {
+    ServerRelativeURL string `json:"serverRelativeURL"`
+}
+
 // buildAPIGroupList walks each backend's Manifest (Group, served Versions,
-// PreferredVersion) into a metav1.APIGroupList and marshals it once.
+// PreferredVersion) into an apiGroupList and marshals it once.
 func buildAPIGroupList(backends []Backend) cachedDoc
 
-// buildOpenAPIV3Index emits one handler3.OpenAPIV3DiscoveryGroupVersion per
-// group/version, ServerRelativeURL "/openapi/v3/apis/<group>/<version>?hash=<rv>",
-// using k8s.io/kube-openapi/pkg/handler3 types (already vendored) so the JSON
-// shape matches what kubectl/client-go's discovery cache already expects.
+// buildOpenAPIV3Index emits one openAPIV3DiscoveryGroupVersion per
+// group/version, ServerRelativeURL "/openapi/v3/apis/<group>/<version>?hash=<rv>".
 func buildOpenAPIV3Index(backends []Backend) cachedDoc
 ```
 
