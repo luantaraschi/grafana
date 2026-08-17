@@ -99,3 +99,34 @@ func TestBuildAPIGroupListETagChangesWithRV(t *testing.T) {
 		t.Errorf("etag did not change when RV changed: both %q", a.etag)
 	}
 }
+
+func TestBuildOpenAPIV3Index(t *testing.T) {
+	backends := []Backend{
+		&fakeBackend{group: "dashboard.grafana.app", rv: "10", manifest: &app.ManifestData{
+			Group: "dashboard.grafana.app",
+			Versions: []app.ManifestVersion{
+				{Name: "v0alpha1", Served: true},
+				{Name: "v1alpha1", Served: false}, // unserved: excluded
+			},
+		}},
+		&fakeBackend{group: "broken.grafana.app", rv: "1", manifest: nil},
+	}
+
+	doc := buildOpenAPIV3Index(backends)
+
+	var idx openAPIV3Discovery
+	if err := json.Unmarshal(doc.body, &idx); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(idx.Paths) != 1 {
+		t.Fatalf("got %d paths, want 1: %+v", len(idx.Paths), idx.Paths)
+	}
+	entry, ok := idx.Paths["apis/dashboard.grafana.app/v0alpha1"]
+	if !ok {
+		t.Fatalf("missing path apis/dashboard.grafana.app/v0alpha1, got %+v", idx.Paths)
+	}
+	want := "/openapi/v3/apis/dashboard.grafana.app/v0alpha1?hash=10"
+	if entry.ServerRelativeURL != want {
+		t.Errorf("got ServerRelativeURL=%q, want %q", entry.ServerRelativeURL, want)
+	}
+}

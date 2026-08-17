@@ -126,3 +126,35 @@ func hashHex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:16]
 }
+
+// buildOpenAPIV3Index synthesizes the /openapi/v3 root document: a small
+// path -> {serverRelativeURL} map (never a merged schema — see AGENTS.md
+// "Discovery endpoints" / the design spec's "no cross-group merge" decision).
+// One entry per served group/version, hash-busted by that group's RV.
+func buildOpenAPIV3Index(backends []Backend) cachedDoc {
+	sorted := sortedManifestBackends(backends, "OpenAPIV3Discovery")
+
+	paths := make(map[string]openAPIV3DiscoveryGroupVersion, len(sorted))
+	var hashInput strings.Builder
+	for _, b := range sorted {
+		m := b.Manifest()
+		for _, v := range m.Versions {
+			if !v.Served {
+				continue
+			}
+			key := fmt.Sprintf("apis/%s/%s", m.Group, v.Name)
+			paths[key] = openAPIV3DiscoveryGroupVersion{
+				ServerRelativeURL: fmt.Sprintf("/openapi/v3/%s?hash=%s", key, b.RV()),
+			}
+			fmt.Fprintf(&hashInput, "%s=%s;", key, b.RV())
+		}
+	}
+
+	doc := openAPIV3Discovery{Paths: paths}
+	body, err := json.Marshal(doc)
+	if err != nil {
+		slog.Error("router: failed to marshal OpenAPIV3Discovery", "error", err)
+		body = []byte(`{"paths":{}}`)
+	}
+	return cachedDoc{body: body, etag: quoteETag(hashHex(hashInput.String()))}
+}
