@@ -128,3 +128,44 @@ func TestServeRootDocsWithETag(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOpenAPIGroupVersionPath(t *testing.T) {
+	cases := []struct {
+		path        string
+		wantGroup   string
+		wantVersion string
+		wantOK      bool
+	}{
+		{"/openapi/v3/apis/dashboard.grafana.app/v1alpha1", "dashboard.grafana.app", "v1alpha1", true},
+		{"/openapi/v3", "", "", false},                            // root doc, not a group/version path
+		{"/openapi/v3/", "", "", false},
+		{"/openapi/v3/apis/dashboard.grafana.app", "", "", false},                // missing version
+		{"/openapi/v3/apis/dashboard.grafana.app/v1alpha1/extra", "", "", false}, // too many segments
+		{"/openapi/v3/api/v1", "", "", false},                                    // core-style "api/", not supported
+	}
+	for _, tc := range cases {
+		group, version, ok := parseOpenAPIGroupVersionPath(tc.path)
+		if ok != tc.wantOK || group != tc.wantGroup || version != tc.wantVersion {
+			t.Errorf("parseOpenAPIGroupVersionPath(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				tc.path, group, version, ok, tc.wantGroup, tc.wantVersion, tc.wantOK)
+		}
+	}
+}
+
+// TestOpenAPIV3MalformedSubpathFallsThrough: a subpath that doesn't parse as
+// apis/<group>/<version> isn't ours; it must fall through to next, same
+// primacy rule as an unknown /apis group.
+func TestOpenAPIV3MalformedSubpathFallsThrough(t *testing.T) {
+	s := withGroups("dashboard.grafana.app")
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	h := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		s.HandleFunc(w, req, next)
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/openapi/v3/apis/dashboard.grafana.app", nil))
+	if rec.Code != http.StatusTeapot {
+		t.Errorf("got code %d, want 418 (fell through to next)", rec.Code)
+	}
+}

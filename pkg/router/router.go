@@ -89,7 +89,7 @@ func (cr *GrafanaRouter) HandleFunc(w http.ResponseWriter, req *http.Request, ne
 
 	// Merged OpenAPI v3 document, served router-side.
 	if path == openapiV3Prefix || strings.HasPrefix(path, openapiV3Prefix+"/") {
-		cr.serveOpenAPIV3(w, req)
+		cr.serveOpenAPIV3(w, req, next)
 		return
 	}
 
@@ -153,9 +153,40 @@ func serveCachedDoc(w http.ResponseWriter, req *http.Request, doc *cachedDoc) {
 // serveOpenAPIV3 serves the merged OpenAPI v3 document. Reached only via
 // HandleFunc; not exported, so /openapi/v3 always flows through the one serving
 // entry point.
-func (cr *GrafanaRouter) serveOpenAPIV3(w http.ResponseWriter, _ *http.Request) {
-	// TODO: merge local control-plane specs with proxied backends' specs.
-	http.Error(w, "openapi v3 not implemented", http.StatusNotImplemented)
+func (cr *GrafanaRouter) serveOpenAPIV3(w http.ResponseWriter, req *http.Request, next http.Handler) {
+	if req.URL.Path == openapiV3Prefix {
+		serveCachedDoc(w, req, cr.openapiIndex.Load())
+		return
+	}
+	_, _, ok := parseOpenAPIGroupVersionPath(req.URL.Path)
+	if !ok {
+		next.ServeHTTP(w, req)
+		return
+	}
+	// TODO(Task 6): look up the owning backend by group, serve from the
+	// RV-keyed cache or proxy through.
+	next.ServeHTTP(w, req)
+}
+
+// parseOpenAPIGroupVersionPath extracts group and version from a path of the
+// exact shape "/openapi/v3/apis/<group>/<version>". ok is false for the root
+// "/openapi/v3" doc itself, a trailing slash, a missing version, extra
+// segments, or the k8s "api/<version>" core-group shape (not applicable here
+// — this router has no core group).
+func parseOpenAPIGroupVersionPath(path string) (group, version string, ok bool) {
+	rest, hasPrefix := strings.CutPrefix(path, openapiV3Prefix+"/")
+	if !hasPrefix || rest == "" {
+		return "", "", false
+	}
+	rest, hasAPIs := strings.CutPrefix(rest, "apis/")
+	if !hasAPIs || rest == "" {
+		return "", "", false
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // Run does an initial load, then reconciles on every coalesced wake from the
