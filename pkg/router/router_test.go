@@ -137,7 +137,7 @@ func TestParseOpenAPIGroupVersionPath(t *testing.T) {
 		wantOK      bool
 	}{
 		{"/openapi/v3/apis/dashboard.grafana.app/v1alpha1", "dashboard.grafana.app", "v1alpha1", true},
-		{"/openapi/v3", "", "", false},                            // root doc, not a group/version path
+		{"/openapi/v3", "", "", false}, // root doc, not a group/version path
 		{"/openapi/v3/", "", "", false},
 		{"/openapi/v3/apis/dashboard.grafana.app", "", "", false},                // missing version
 		{"/openapi/v3/apis/dashboard.grafana.app/v1alpha1/extra", "", "", false}, // too many segments
