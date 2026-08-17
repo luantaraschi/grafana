@@ -1,5 +1,15 @@
 package router
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"sort"
+	"strings"
+)
+
 // cachedDoc is a pre-marshaled JSON response body plus its RV-derived ETag.
 // Built once per reconcile cycle by buildAPIGroupList/buildOpenAPIV3Index and
 // stored via atomic.Pointer for lock-free concurrent reads from the serving
@@ -44,4 +54,75 @@ type openAPIV3Discovery struct {
 
 type openAPIV3DiscoveryGroupVersion struct {
 	ServerRelativeURL string `json:"serverRelativeURL"`
+}
+
+// buildAPIGroupList synthesizes the /apis root document (APIGroupList) from
+// each backend's Manifest — Group, served Versions, PreferredVersion. No
+// backend round-trip: this is pure local synthesis, called once per
+// reconcile cycle alongside the handler snapshot.
+func buildAPIGroupList(backends []Backend) cachedDoc {
+	sorted := sortedManifestBackends(backends, "APIGroupList")
+
+	groups := make([]apiGroup, 0, len(sorted))
+	var hashInput strings.Builder
+	for _, b := range sorted {
+		m := b.Manifest()
+		versions := make([]groupVersionForDiscovery, 0, len(m.Versions))
+		for _, v := range m.Versions {
+			if !v.Served {
+				continue
+			}
+			versions = append(versions, groupVersionForDiscovery{
+				GroupVersion: m.Group + "/" + v.Name,
+				Version:      v.Name,
+			})
+		}
+		var preferred groupVersionForDiscovery
+		if m.PreferredVersion != "" {
+			preferred = groupVersionForDiscovery{
+				GroupVersion: m.Group + "/" + m.PreferredVersion,
+				Version:      m.PreferredVersion,
+			}
+		}
+		groups = append(groups, apiGroup{
+			Name:             m.Group,
+			Versions:         versions,
+			PreferredVersion: preferred,
+		})
+		fmt.Fprintf(&hashInput, "%s=%s;", b.Group(), b.RV())
+	}
+
+	list := apiGroupList{Kind: "APIGroupList", APIVersion: "v1", Groups: groups}
+	body, err := json.Marshal(list)
+	if err != nil {
+		// list is a fixed, well-typed struct: Marshal cannot fail in practice.
+		// Fall back to an empty-but-valid document rather than serving garbage.
+		slog.Error("router: failed to marshal APIGroupList", "error", err)
+		body = []byte(`{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`)
+	}
+	return cachedDoc{body: body, etag: quoteETag(hashHex(hashInput.String()))}
+}
+
+// sortedManifestBackends filters out backends with a nil Manifest (logged and
+// skipped, never fatal — matches the existing duplicate-group
+// warn-and-continue tolerance for bad GitOps config) and returns the rest
+// sorted by group name for deterministic output and a stable hash input.
+func sortedManifestBackends(backends []Backend, forDoc string) []Backend {
+	out := make([]Backend, 0, len(backends))
+	for _, b := range backends {
+		if b.Manifest() == nil {
+			slog.Warn("router: skipping backend with nil manifest", "group", b.Group(), "doc", forDoc)
+			continue
+		}
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Group() < out[j].Group() })
+	return out
+}
+
+// hashHex returns a short hex digest of s, used to build a cachedDoc's ETag
+// from the sorted group/RV pairs that went into it.
+func hashHex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:16]
 }
