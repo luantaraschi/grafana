@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -22,6 +23,15 @@ const (
 type handlerEntry struct {
 	handler http.Handler
 	lastRV  string
+}
+
+// servingEntry is the immutable per-group record published into snapshot: the
+// proxy handler plus the RV. RV is needed at serve time to validate/label the
+// per-group-version openapi cache; entries (reconcile-goroutine-owned) isn't
+// safe to read from serving goroutines, so RV is duplicated here.
+type servingEntry struct {
+	handler http.Handler
+	rv      string
 }
 
 type phase int
@@ -49,9 +59,9 @@ type GrafanaRouter struct {
 	// (single goroutine); never read from the serving path.
 	entries map[string]*handlerEntry
 
-	// snapshot is the immutable group -> Backend map used to serve requests.
-	// reconcile rebuilds and atomically stores it; serving loads it.
-	snapshot atomic.Pointer[map[string]http.Handler]
+	// snapshot is the immutable group -> servingEntry map used to serve
+	// requests. reconcile rebuilds and atomically stores it; serving loads it.
+	snapshot atomic.Pointer[map[string]servingEntry]
 
 	// apiGroupList and openapiIndex are the router-synthesized root documents
 	// for /apis and /openapi/v3, rebuilt from backends' Manifest() on every
@@ -59,6 +69,14 @@ type GrafanaRouter struct {
 	// cross-group OpenAPI schema merge — see AGENTS.md / the design spec.
 	apiGroupList atomic.Pointer[cachedDoc]
 	openapiIndex atomic.Pointer[cachedDoc]
+
+	// openapiDocs caches per-group-version OpenAPI v3 documents fetched from
+	// the owning backend, keyed by "group/version". Written by many
+	// concurrent serving goroutines on cache-miss (unlike snapshot/
+	// apiGroupList/openapiIndex, which have exactly one writer, reconcile),
+	// so it's a sync.Map rather than an atomic.Pointer swap. A stale rv is
+	// simply overwritten on next fetch, not actively evicted.
+	openapiDocs sync.Map
 }
 
 func NewGrafanaRouter(loader RoutesLoader) *GrafanaRouter {
@@ -66,7 +84,7 @@ func NewGrafanaRouter(loader RoutesLoader) *GrafanaRouter {
 		loader:  loader,
 		entries: map[string]*handlerEntry{},
 	}
-	empty := map[string]http.Handler{}
+	empty := map[string]servingEntry{}
 	r.snapshot.Store(&empty)
 	emptyGroups := buildAPIGroupList(nil)
 	r.apiGroupList.Store(&emptyGroups)
@@ -76,14 +94,13 @@ func NewGrafanaRouter(loader RoutesLoader) *GrafanaRouter {
 }
 
 // HandleFunc is the single serving entry point: it serves both the reverse-proxy
-// tree (/apis, by group) and the merged OpenAPI v3 document (/openapi/v3), and
-// falls through to next for anything the router does not own. There is no
+// tree (/apis, by group) and the OpenAPI v3 discovery/documents (/openapi/v3),
+// and falls through to next for anything the router does not own. There is no
 // separate exported OpenAPI handler — a caller wraps this as
 // http.HandlerFunc(func(w, r) { router.HandleFunc(w, r, next) }).
 //
-// NOTE: when implementing the /openapi/v3 merge, we also need to support
-// serverAddressByClientCIDRs in /apis to allow local in-network clients to
-// connect directly as desired.
+// NOTE: /apis still needs serverAddressByClientCIDRs support to allow local
+// in-network clients to connect directly as desired.
 func (cr *GrafanaRouter) HandleFunc(w http.ResponseWriter, req *http.Request, next http.Handler) {
 	path := req.URL.Path
 
@@ -108,7 +125,7 @@ func (cr *GrafanaRouter) HandleFunc(w http.ResponseWriter, req *http.Request, ne
 
 	group := groupFromPath(path)
 	handlers := *cr.snapshot.Load()
-	h, ok := handlers[group]
+	entry, ok := handlers[group]
 	if !ok {
 		// A group we don't serve. Fall through rather than 404 so a caller
 		// mounted ahead of us keeps its own routes.
@@ -117,7 +134,7 @@ func (cr *GrafanaRouter) HandleFunc(w http.ResponseWriter, req *http.Request, ne
 	}
 	// /apis/<group> group discovery and /apis/<group>/... both proxy to the
 	// single owning backend (one backend owns all versions of a group).
-	h.ServeHTTP(w, req)
+	entry.handler.ServeHTTP(w, req)
 }
 
 // groupFromPath returns the group segment of an /apis/<group>[/...] path.
@@ -158,14 +175,61 @@ func (cr *GrafanaRouter) serveOpenAPIV3(w http.ResponseWriter, req *http.Request
 		serveCachedDoc(w, req, cr.openapiIndex.Load())
 		return
 	}
-	_, _, ok := parseOpenAPIGroupVersionPath(req.URL.Path)
+	group, version, ok := parseOpenAPIGroupVersionPath(req.URL.Path)
 	if !ok {
 		next.ServeHTTP(w, req)
 		return
 	}
-	// TODO(Task 6): look up the owning backend by group, serve from the
-	// RV-keyed cache or proxy through.
-	next.ServeHTTP(w, req)
+	cr.serveOpenAPIGroupVersion(w, req, next, group, version)
+}
+
+// serveOpenAPIGroupVersion serves one group's OpenAPI v3 document: a
+// conditional-GET-aware, RV-keyed cache in front of a plain proxy to the
+// owning backend. Never merges across groups — this is one backend's
+// document, verbatim.
+func (cr *GrafanaRouter) serveOpenAPIGroupVersion(w http.ResponseWriter, req *http.Request, next http.Handler, group, version string) {
+	handlers := *cr.snapshot.Load()
+	entry, ok := handlers[group]
+	if !ok {
+		next.ServeHTTP(w, req)
+		return
+	}
+
+	etag := quoteETag(entry.rv)
+	if req.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	cacheKey := group + "/" + version
+	if cached, ok := cr.openapiDocs.Load(cacheKey); ok {
+		c := cached.(openapiCacheEntry)
+		if c.rv == entry.rv {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("ETag", c.etag)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(c.body)
+			return
+		}
+	}
+
+	// Cache miss or stale rv: proxy through, capturing the response so it can
+	// be cached on success. Strip conditional headers first — see
+	// stripConditionalHeaders' doc comment for why.
+	proxyReq := req.Clone(req.Context())
+	stripConditionalHeaders(proxyReq)
+	rec := newCaptureWriter()
+	entry.handler.ServeHTTP(rec, proxyReq)
+
+	for k, v := range rec.header {
+		w.Header()[k] = v
+	}
+	if rec.statusCode == http.StatusOK {
+		cr.openapiDocs.Store(cacheKey, openapiCacheEntry{rv: entry.rv, etag: etag, body: rec.body.Bytes()})
+		w.Header().Set("ETag", etag)
+	}
+	w.WriteHeader(rec.statusCode)
+	_, _ = w.Write(rec.body.Bytes())
 }
 
 // parseOpenAPIGroupVersionPath extracts group and version from a path of the
@@ -310,9 +374,9 @@ func (r *GrafanaRouter) reconcile(ctx context.Context) error {
 // them atomically for the serving path: the per-group handler snapshot, the
 // synthesized APIGroupList, and the synthesized OpenAPI v3 discovery index.
 func (r *GrafanaRouter) publish(backends []Backend) {
-	snap := make(map[string]http.Handler, len(r.entries))
+	snap := make(map[string]servingEntry, len(r.entries))
 	for group, e := range r.entries {
-		snap[group] = e.handler
+		snap[group] = servingEntry{handler: e.handler, rv: e.lastRV}
 	}
 	r.snapshot.Store(&snap)
 
