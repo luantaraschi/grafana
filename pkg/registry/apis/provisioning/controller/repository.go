@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -899,8 +900,12 @@ func (rc *RepositoryController) process(key string) (err error) {
 	// Captured before the over-quota override below: being over quota doesn't
 	// mean the repository itself is unreachable, so this (not healthStatus.Healthy)
 	// is what gates whether hooks can run — a quota-blocked-but-reachable repo
-	// must not be treated as unreachable for that purpose.
-	reachable := healthStatus.Healthy
+	// must not be treated as unreachable for that purpose. Also not every failed
+	// Test() means unreachable: e.g. branch protection blocking direct pushes is
+	// reported as a failure even though the repository and webhook API are both
+	// reachable, so a reachability-specific read of the test result is used
+	// instead of the raw Success flag.
+	reachable := isReachableTestResult(testResults)
 
 	// If over quota, override health to unhealthy.
 	if isOverQuota {
@@ -1058,6 +1063,25 @@ func classifyHookFailureReason(err error) string {
 		return provisioning.ReasonAuthenticationFailed
 	}
 	return provisioning.ReasonInvalidSpec
+}
+
+// isReachableTestResult reports whether the repository and its webhook API were
+// actually reachable during the health check, as opposed to Test() merely
+// reporting some other validation/policy failure (e.g. branch protection
+// blocking direct pushes, which repository implementations report as a plain
+// 400 alongside 401/403/503 connectivity failures). Only the latter mean any
+// create/update/delete call against the repository is doomed; the former still
+// permit hook operations like webhook cleanup.
+func isReachableTestResult(testResults *provisioning.TestResults) bool {
+	if testResults == nil || testResults.Success {
+		return true
+	}
+	switch testResults.Code {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusServiceUnavailable:
+		return false
+	default:
+		return true
+	}
 }
 
 // shouldRotateWebhookSecret returns true when a repository has an active webhook
