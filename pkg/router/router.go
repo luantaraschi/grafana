@@ -52,6 +52,13 @@ type GrafanaRouter struct {
 	// snapshot is the immutable group -> Backend map used to serve requests.
 	// reconcile rebuilds and atomically stores it; serving loads it.
 	snapshot atomic.Pointer[map[string]http.Handler]
+
+	// apiGroupList and openapiIndex are the router-synthesized root documents
+	// for /apis and /openapi/v3, rebuilt from backends' Manifest() on every
+	// reconcile and stored atomically alongside snapshot. Never a
+	// cross-group OpenAPI schema merge — see AGENTS.md / the design spec.
+	apiGroupList atomic.Pointer[cachedDoc]
+	openapiIndex atomic.Pointer[cachedDoc]
 }
 
 func NewGrafanaRouter(loader RoutesLoader) *GrafanaRouter {
@@ -61,6 +68,10 @@ func NewGrafanaRouter(loader RoutesLoader) *GrafanaRouter {
 	}
 	empty := map[string]http.Handler{}
 	r.snapshot.Store(&empty)
+	emptyGroups := buildAPIGroupList(nil)
+	r.apiGroupList.Store(&emptyGroups)
+	emptyIndex := buildOpenAPIV3Index(nil)
+	r.openapiIndex.Store(&emptyIndex)
 	return r
 }
 
@@ -121,10 +132,22 @@ func groupFromPath(path string) string {
 
 // serveAPIGroupList synthesizes the /apis root (APIGroupList) from the current
 // group snapshot.
-func (cr *GrafanaRouter) serveAPIGroupList(w http.ResponseWriter, _ *http.Request) {
-	// TODO: build a real APIGroupList from the snapshot keys (each group's
-	// versions come from its Manifest / group discovery).
-	http.Error(w, "apis discovery not implemented", http.StatusNotImplemented)
+func (cr *GrafanaRouter) serveAPIGroupList(w http.ResponseWriter, req *http.Request) {
+	serveCachedDoc(w, req, cr.apiGroupList.Load())
+}
+
+// serveCachedDoc writes a synthesized document, honoring conditional GET via
+// If-None-Match against the document's RV-derived ETag. Shared by
+// serveAPIGroupList and the /openapi/v3 root doc.
+func serveCachedDoc(w http.ResponseWriter, req *http.Request, doc *cachedDoc) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("ETag", doc.etag)
+	if req.Header.Get("If-None-Match") == doc.etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(doc.body)
 }
 
 // serveOpenAPIV3 serves the merged OpenAPI v3 document. Reached only via
@@ -248,18 +271,25 @@ func (r *GrafanaRouter) reconcile(ctx context.Context) error {
 		}
 	}
 
-	r.publish()
+	r.publish(backends)
 	return errors.Join(errs...)
 }
 
-// publish builds a fresh immutable group -> Backend snapshot from entries and
-// stores it atomically for the serving path.
-func (r *GrafanaRouter) publish() {
+// publish builds fresh immutable artifacts from entries/backends and stores
+// them atomically for the serving path: the per-group handler snapshot, the
+// synthesized APIGroupList, and the synthesized OpenAPI v3 discovery index.
+func (r *GrafanaRouter) publish(backends []Backend) {
 	snap := make(map[string]http.Handler, len(r.entries))
 	for group, e := range r.entries {
 		snap[group] = e.handler
 	}
 	r.snapshot.Store(&snap)
+
+	groupList := buildAPIGroupList(backends)
+	r.apiGroupList.Store(&groupList)
+
+	index := buildOpenAPIV3Index(backends)
+	r.openapiIndex.Store(&index)
 }
 
 func rejectBackendRedirects(resp *http.Response) error {

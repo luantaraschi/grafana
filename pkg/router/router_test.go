@@ -27,7 +27,7 @@ func withGroups(groups ...string) *GrafanaRouter {
 			lastRV: "1",
 		}
 	}
-	s.publish()
+	s.publish(nil)
 	return s
 }
 
@@ -53,10 +53,13 @@ func TestHandleFuncRoutesByGroup(t *testing.T) {
 		{"/apis/unknown.grafana.app/v1/x", "", http.StatusTeapot},
 		// paths outside the /apis tree fall through to next
 		{"/healthz", "", http.StatusTeapot},
-		// /openapi/v3 is served router-side via HandleFunc (not fallthrough);
-		// placeholder 501 until the merge is implemented.
-		{"/openapi/v3", "", http.StatusNotImplemented},
-		{"/openapi/v3/apis/dashboard.grafana.app/v1alpha1", "", http.StatusNotImplemented},
+		// /openapi/v3 root is served router-side via HandleFunc (not
+		// fallthrough); now router-synthesized. Body/ETag checked separately
+		// in TestServeRootDocsWithETag. The per-group-version subpath isn't
+		// covered here — withGroups' fake handlers don't serve real OpenAPI
+		// bytes, so there's nothing meaningful to assert on that path with
+		// this fixture; see openapi_cache_test.go.
+		{"/openapi/v3", "", http.StatusOK},
 	}
 	for _, tc := range cases {
 		rec := httptest.NewRecorder()
@@ -86,6 +89,42 @@ func TestHandleFuncRootDiscoveryNotProxied(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code == http.StatusTeapot {
 			t.Errorf("path %q fell through to next; root discovery must be router-owned", path)
+		}
+	}
+}
+
+// TestServeRootDocsWithETag pins that both router-synthesized root documents
+// (/apis and /openapi/v3) set an ETag and honor conditional GET with 304.
+func TestServeRootDocsWithETag(t *testing.T) {
+	s := withGroups("dashboard.grafana.app")
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	h := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		s.HandleFunc(w, req, next)
+	})
+
+	for _, path := range []string{"/apis", "/openapi/v3"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("path %q: got code %d, want 200", path, rec.Code)
+		}
+		etag := rec.Header().Get("ETag")
+		if etag == "" {
+			t.Fatalf("path %q: missing ETag header", path)
+		}
+
+		// Conditional GET with the returned ETag must 304 with no body.
+		rec2 := httptest.NewRecorder()
+		req2 := httptest.NewRequest(http.MethodGet, path, nil)
+		req2.Header.Set("If-None-Match", etag)
+		h.ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusNotModified {
+			t.Errorf("path %q: got code %d with matching If-None-Match, want 304", path, rec2.Code)
+		}
+		if rec2.Body.Len() != 0 {
+			t.Errorf("path %q: 304 response had a body: %q", path, rec2.Body.String())
 		}
 	}
 }
