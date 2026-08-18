@@ -138,7 +138,7 @@ export function Overview({ solutions }: OverviewProps) {
   const [open, setOpen] = useState(false);
 
   return (
-    <div>
+    <Stack direction="column" gap={2}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1} wrap="wrap">
         <Text element="h2" variant="h5">
           <Trans i18nKey="home.overview.title">Your observability stack overview</Trans>
@@ -164,8 +164,8 @@ export function Overview({ solutions }: OverviewProps) {
         </Dropdown>
       </Stack>
 
-      <div className={styles.content}>{option.content}</div>
-    </div>
+      {option.content}
+    </Stack>
   );
 }
 
@@ -186,8 +186,5 @@ const getStyles = (theme: GrafanaTheme2) => ({
       pointerEvents: 'none',
       zIndex: -1,
     },
-  }),
-  content: css({
-    marginTop: theme.spacing(2),
   }),
 });
