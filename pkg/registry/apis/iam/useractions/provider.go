@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	claims "github.com/grafana/authlib/types"
 
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
@@ -14,18 +16,15 @@ import (
 	authzstore "github.com/grafana/grafana/pkg/services/authz/rbac/store"
 )
 
-// teamPageSize bounds each page of the team lookup, mirroring the authz
-// service's team resolution.
+// teamPageSize bounds each page of the team lookup.
 const teamPageSize = 50
 
-// RolePermissionProvider resolves the RBAC actions granted to the calling
-// identity.
+// RolePermissionProvider resolves the RBAC actions granted to the caller.
 type RolePermissionProvider interface {
 	ActionsForUser(ctx context.Context, requester identity.Requester) (map[string]bool, error)
 }
 
-// identityStore is the subset of the IAM legacy store needed to resolve the
-// teams an identity belongs to.
+// identityStore resolves the teams an identity belongs to.
 type identityStore interface {
 	ListUserTeams(ctx context.Context, ns claims.NamespaceInfo, query legacy.ListUserTeamsQuery) (*legacy.ListUserTeamsResult, error)
 }
@@ -43,16 +42,11 @@ type sqlProvider struct {
 	actionResolver accesscontrol.ActionResolver
 }
 
-// NewSQLProvider resolves the caller's actions from the RBAC tables of the
-// tenant database: permissions granted through its basic role (including
-// Grafana Admin for server admins), roles assigned directly to the user, and
-// roles assigned to its teams. Everything is keyed off the request namespace,
-// so one implementation serves both single-tenant Grafana and the multi-tenant
-// IAM apiserver.
-//
-// actionResolver expands action set permissions (for example dashboards:view)
-// into the individual actions they stand for. It may be nil where no action
-// sets are registered, in which case action sets are reported as-is.
+// NewSQLProvider resolves actions from the RBAC tables, keyed off the request
+// namespace so it serves both single- and multi-tenant deployments. It covers
+// the caller's basic role, Grafana Admin for server admins, and roles assigned
+// to the user and its teams. actionResolver expands action sets and may be nil
+// where none are registered, in which case action sets are reported as-is.
 func NewSQLProvider(actions ActionStore, identifiers identifierStore, identities identityStore, actionResolver accesscontrol.ActionResolver) RolePermissionProvider {
 	return &sqlProvider{
 		actions:        actions,
@@ -63,17 +57,13 @@ func NewSQLProvider(actions ActionStore, identifiers identifierStore, identities
 }
 
 func (p *sqlProvider) ActionsForUser(ctx context.Context, requester identity.Requester) (map[string]bool, error) {
-	// Only users and service accounts hold RBAC assignments. Anonymous
-	// identities and access policies get an empty set rather than an error,
-	// matching the legacy endpoint's behaviour for identities without
-	// permissions.
+	// Only users and service accounts hold RBAC assignments.
 	if !requester.IsIdentityType(claims.TypeUser, claims.TypeServiceAccount) {
-		return map[string]bool{}, nil
+		return nil, apierrors.NewBadRequest(fmt.Sprintf("cannot resolve actions for a %s identity", requester.GetIdentityType()))
 	}
 
-	// Take the namespace from the request rather than the identity: it is the
-	// tenant the caller asked about, it has already been checked by the
-	// namespace authorizer, and it is what the org id was resolved from.
+	// The request namespace is the tenant the caller asked about, is already
+	// checked by the namespace authorizer, and is what the org id came from.
 	ns, err := request.NamespaceInfoFrom(ctx, true)
 	if err != nil {
 		return nil, err
@@ -129,8 +119,7 @@ func (p *sqlProvider) userTeams(ctx context.Context, ns claims.NamespaceInfo, us
 	}
 }
 
-// buildActionMap turns the action rows into the action -> true map the
-// endpoint returns, expanding action sets when a resolver is configured.
+// buildActionMap expands action sets when a resolver is configured.
 func (p *sqlProvider) buildActionMap(actions []string) map[string]bool {
 	if p.actionResolver == nil {
 		out := make(map[string]bool, len(actions))

@@ -6,8 +6,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	claims "github.com/grafana/authlib/types"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	k8srequest "k8s.io/apiserver/pkg/endpoints/request"
+
+	claims "github.com/grafana/authlib/types"
 
 	"github.com/grafana/grafana/pkg/apimachinery/identity"
 	"github.com/grafana/grafana/pkg/registry/apis/iam/legacy"
@@ -96,16 +98,16 @@ func TestSQLProvider_ActionsForUser(t *testing.T) {
 		require.Equal(t, map[string]bool{"folders:read": true, "dashboards:read": true}, got)
 	})
 
-	t.Run("identities without RBAC assignments get an empty set", func(t *testing.T) {
+	t.Run("identities that cannot hold RBAC assignments are rejected", func(t *testing.T) {
 		actions := &fakeActionStore{actions: []string{"should:not:be:read"}}
 		provider := NewSQLProvider(actions, &fakeIdentifierStore{}, &fakeIdentityStore{}, nil)
 
 		// An access policy identity is neither a user nor a service account.
-		got, err := provider.ActionsForUser(nsCtx("default"), &identity.StaticRequester{
+		_, err := provider.ActionsForUser(nsCtx("default"), &identity.StaticRequester{
 			Type: claims.TypeAccessPolicy, OrgID: 1,
 		})
-		require.NoError(t, err)
-		require.Empty(t, got)
+		require.Error(t, err)
+		require.True(t, apierrors.IsBadRequest(err))
 	})
 }
 

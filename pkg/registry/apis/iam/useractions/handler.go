@@ -14,15 +14,11 @@ import (
 	"github.com/grafana/grafana/pkg/util/errhttp"
 )
 
-// RoutePath is the namespaced custom route and the resource name it is
-// authorized as.
+// RoutePath is the route, and the resource name it is authorized as.
 const RoutePath = "userActions"
 
-// Handler serves GET /apis/iam.grafana.app/v0alpha1/namespaces/{ns}/userActions:
-// the RBAC actions granted to the calling user, as a map of action -> true.
-// The response matches the legacy /api/access-control/user/actions endpoint,
-// covering the caller's basic role as well as roles assigned to the user
-// directly and through its teams.
+// Handler serves the caller's RBAC actions as a map of action -> true, matching
+// the legacy /api/access-control/user/actions endpoint.
 type Handler struct {
 	provider RolePermissionProvider
 }

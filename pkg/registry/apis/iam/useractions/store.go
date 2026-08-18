@@ -2,8 +2,6 @@ package useractions
 
 import (
 	"context"
-	"embed"
-	"fmt"
 	"text/template"
 
 	claims "github.com/grafana/authlib/types"
@@ -13,24 +11,30 @@ import (
 	"github.com/grafana/grafana/pkg/storage/unified/sql/sqltemplate"
 )
 
-var (
-	//go:embed *.sql
-	sqlTemplatesFS embed.FS
-	sqlTemplates   = template.Must(template.New("sql").ParseFS(sqlTemplatesFS, `*.sql`))
+// actionsQuery selects the distinct actions of every role granting permissions
+// to an identity: its basic role (and Grafana Admin when it is a server admin),
+// roles assigned to the user, and roles assigned to its teams.
+const actionsQuery = `
+SELECT DISTINCT p.action FROM {{ .Ident .PermissionTable }} as p
+INNER JOIN (
+  SELECT role_id FROM {{ .Ident .BuiltinRoleTable }} as br WHERE (br.role = {{ .Arg .Query.Role }} AND (br.org_id = {{ .Arg .Query.OrgID }} OR br.org_id = 0))
+    {{ if .Query.IsServerAdmin }}
+    OR (br.role = 'Grafana Admin')
+    {{ end }}
+    {{ if .Query.UserID }}
+  UNION ALL
+  SELECT role_id FROM {{ .Ident .UserRoleTable }} as ur WHERE ur.user_id = {{ .Arg .Query.UserID }} AND (ur.org_id = {{ .Arg .Query.OrgID }} OR ur.org_id = 0)
+    {{ end }}
+    {{ if .Query.TeamIDs }}
+  UNION ALL
+  SELECT role_id FROM {{ .Ident .TeamRoleTable }} as tr WHERE tr.team_id IN ({{ .ArgList .Query.TeamIDs }}) AND tr.org_id = {{ .Arg .Query.OrgID }}
+  {{ end }}
+) as roles ON p.role_id = roles.role_id
+`
 
-	sqlQueryActions = mustTemplate("actions_query.sql")
-)
+var sqlQueryActions = template.Must(template.New("actions_query.sql").Parse(actionsQuery))
 
-func mustTemplate(filename string) *template.Template {
-	if t := sqlTemplates.Lookup(filename); t != nil {
-		return t
-	}
-	panic(fmt.Sprintf("template file not found: %s", filename))
-}
-
-// ActionsQuery selects every role granting permissions to an identity: the
-// identity's basic role (and Grafana Admin when it is a server admin), roles
-// assigned directly to the user, and roles assigned to its teams.
+// ActionsQuery identifies whose actions to look up.
 type ActionsQuery struct {
 	OrgID         int64
 	UserID        int64
@@ -69,10 +73,10 @@ type ActionStore interface {
 	GetUserActions(ctx context.Context, ns claims.NamespaceInfo, query ActionsQuery) ([]string, error)
 }
 
-// SQLActionStore reads actions from the RBAC tables of the tenant database.
-// It goes through legacysql so the same implementation serves single-tenant
-// Grafana and the multi-tenant IAM apiserver, where the tables live in a
-// per-tenant schema resolved from the request namespace.
+// SQLActionStore reads actions from the RBAC tables. It goes through legacysql
+// so the same implementation serves single-tenant Grafana and the multi-tenant
+// IAM apiserver, where the tables live in a per-tenant schema resolved from the
+// request namespace.
 type SQLActionStore struct {
 	sql    legacysql.LegacyDatabaseProvider
 	tracer tracing.Tracer
