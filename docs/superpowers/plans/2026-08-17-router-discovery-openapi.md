@@ -22,7 +22,7 @@ response types honor `If-None-Match` → `304`.
 
 ## Global Constraints
 
-- **Stdlib only in `pkg/router`** — no `k8s.io/apimachinery`, no
+- **Stdlib only in `pkg/router`** — no
   `k8s.io/kube-openapi`, no `klog`. Discovery/OpenAPI JSON shapes are
   hand-rolled local structs with matching JSON tags (see spec Components).
 - **No cross-group OpenAPI schema merge, ever.** Root `/openapi/v3` is a small
