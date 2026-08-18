@@ -19,7 +19,7 @@ type fakeProvider struct {
 	err     error
 }
 
-func (f *fakeProvider) ActionsForUser(_ context.Context, _ identity.Requester) (map[string]bool, error) {
+func (f *fakeProvider) ActionsForUser(_ context.Context, _ identity.Requester, _ Options) (map[string]bool, error) {
 	return f.actions, f.err
 }
 

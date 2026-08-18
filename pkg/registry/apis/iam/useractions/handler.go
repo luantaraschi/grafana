@@ -49,6 +49,15 @@ func (h *Handler) GetAPIRoutes(_ map[string]common.OpenAPIDefinition) *builder.A
 										Schema:      spec.StringProperty(),
 									},
 								},
+								{
+									ParameterProps: spec3.ParameterProps{
+										Name:        "reloadcache",
+										In:          "query",
+										Required:    false,
+										Description: "Resolve permissions afresh rather than serving a cached set",
+										Schema:      spec.BooleanProperty(),
+									},
+								},
 							},
 							Responses: &spec3.Responses{
 								ResponsesProps: spec3.ResponsesProps{
@@ -86,7 +95,11 @@ func (h *Handler) handle(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	actions, err := h.provider.ActionsForUser(ctx, requester)
+	// reloadcache mirrors the legacy endpoint, which the frontend uses to pick up
+	// its own permission changes straight after a mutation.
+	opts := Options{ReloadCache: req.URL.Query().Get("reloadcache") == "true"}
+
+	actions, err := h.provider.ActionsForUser(ctx, requester, opts)
 	if err != nil {
 		errhttp.Write(ctx, err, w)
 		return

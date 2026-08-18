@@ -310,7 +310,12 @@ const injectedRtkApi = api
         invalidatesTags: ['Team'],
       }),
       getUserActions: build.query<GetUserActionsApiResponse, GetUserActionsApiArg>({
-        query: () => ({ url: `/userActions` }),
+        query: (queryArg) => ({
+          url: `/userActions`,
+          params: {
+            reloadcache: queryArg.reloadcache,
+          },
+        }),
         providesTags: ['UserActions'],
       }),
       listUser: build.query<ListUserApiResponse, ListUserApiArg>({
@@ -767,7 +772,10 @@ export type CreateTeamRemovememberApiArg = {
 export type GetUserActionsApiResponse = /** status 200 Map of RBAC action to true */ {
   [key: string]: boolean;
 };
-export type GetUserActionsApiArg = void;
+export type GetUserActionsApiArg = {
+  /** Resolve permissions afresh rather than serving a cached set */
+  reloadcache?: boolean;
+};
 export type ListUserApiResponse = /** status 200 OK */ UserList;
 export type ListUserApiArg = {
   /** If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget). */

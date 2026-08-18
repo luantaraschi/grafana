@@ -21,9 +21,15 @@ import (
 // teamPageSize bounds each page of the team lookup.
 const teamPageSize = 50
 
+// Options mirrors the legacy endpoint's reloadcache behaviour.
+type Options struct {
+	// ReloadCache resolves permissions afresh instead of serving a cached set.
+	ReloadCache bool
+}
+
 // RolePermissionProvider resolves the RBAC actions granted to the caller.
 type RolePermissionProvider interface {
-	ActionsForUser(ctx context.Context, requester identity.Requester) (map[string]bool, error)
+	ActionsForUser(ctx context.Context, requester identity.Requester, opts Options) (map[string]bool, error)
 }
 
 // identityStore resolves the teams an identity belongs to.
@@ -58,7 +64,7 @@ func NewSQLProvider(actions ActionStore, identifiers identifierStore, identities
 	}
 }
 
-func (p *sqlProvider) ActionsForUser(ctx context.Context, requester identity.Requester) (map[string]bool, error) {
+func (p *sqlProvider) ActionsForUser(ctx context.Context, requester identity.Requester, _ Options) (map[string]bool, error) {
 	// Only users and service accounts hold RBAC assignments.
 	if !requester.IsIdentityType(claims.TypeUser, claims.TypeServiceAccount) {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("cannot resolve actions for a %s identity", requester.GetIdentityType()))

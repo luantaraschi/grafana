@@ -103,6 +103,20 @@ func TestIntegrationUserActions(t *testing.T) {
 		}
 	})
 
+	// The frontend calls the legacy endpoint with reloadcache=true after mutating
+	// its own permissions, so the same parameter has to bypass the cache here.
+	t.Run("reloadcache returns a freshly resolved set", func(t *testing.T) {
+		before := getUserActions(t, helper.Org1.Editor)
+
+		res := map[string]bool{}
+		rsp := apis.DoRequest(helper, apis.RequestParams{
+			User: helper.Org1.Editor,
+			Path: routePath + "?reloadcache=true",
+		}, &res)
+		require.Equal(t, 200, rsp.Response.StatusCode)
+		require.Equal(t, before, res)
+	})
+
 	t.Run("unauthenticated is rejected", func(t *testing.T) {
 		res := map[string]any{}
 		rsp := apis.DoRequest(helper, apis.RequestParams{

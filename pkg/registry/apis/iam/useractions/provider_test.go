@@ -78,7 +78,7 @@ func TestSQLProvider_ActionsForUser(t *testing.T) {
 
 		got, err := provider.ActionsForUser(nsCtx("default"), &user.SignedInUser{
 			OrgID: 1, UserID: 7, UserUID: "u7", OrgRole: org.RoleEditor,
-		})
+		}, Options{})
 		require.NoError(t, err)
 		require.Equal(t, map[string]bool{"dashboards:read": true, "teams:create": true, "users:read": true}, got)
 
@@ -98,7 +98,7 @@ func TestSQLProvider_ActionsForUser(t *testing.T) {
 		}
 		provider := NewSQLProvider(actions, ids, &fakeIdentityStore{pages: [][]int64{nil}}, nil)
 
-		got, err := provider.ActionsForUser(nsCtx("stacks-11"), &user.SignedInUser{OrgID: 1, UserID: 3, UserUID: "u3"})
+		got, err := provider.ActionsForUser(nsCtx("stacks-11"), &user.SignedInUser{OrgID: 1, UserID: 3, UserUID: "u3"}, Options{})
 		require.NoError(t, err)
 		require.Equal(t, map[string]bool{"dashboards:read": true}, got)
 		require.Equal(t, int64(1), actions.gotNs.OrgID)
@@ -109,7 +109,7 @@ func TestSQLProvider_ActionsForUser(t *testing.T) {
 		actions := &fakeActionStore{actions: []string{"folders:edit"}}
 		provider := NewSQLProvider(actions, &fakeIdentifierStore{}, &fakeIdentityStore{pages: [][]int64{nil}}, expandFolderEdit{})
 
-		got, err := provider.ActionsForUser(nsCtx("default"), &user.SignedInUser{OrgID: 1, UserID: 1, UserUID: "u1"})
+		got, err := provider.ActionsForUser(nsCtx("default"), &user.SignedInUser{OrgID: 1, UserID: 1, UserUID: "u1"}, Options{})
 		require.NoError(t, err)
 		require.Equal(t, map[string]bool{"folders:read": true, "dashboards:read": true}, got)
 	})
@@ -121,7 +121,7 @@ func TestSQLProvider_ActionsForUser(t *testing.T) {
 		// An access policy identity is neither a user nor a service account.
 		_, err := provider.ActionsForUser(nsCtx("default"), &identity.StaticRequester{
 			Type: claims.TypeAccessPolicy, OrgID: 1,
-		})
+		}, Options{})
 		require.Error(t, err)
 		require.True(t, apierrors.IsBadRequest(err))
 	})

@@ -2041,6 +2041,14 @@
               "type": "string"
             },
             "example": "default"
+          },
+          {
+            "name": "reloadcache",
+            "in": "query",
+            "description": "Resolve permissions afresh rather than serving a cached set",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {

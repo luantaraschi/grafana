@@ -188,12 +188,12 @@ func RegisterAPIService(
 			display.NewLegacyDisplayProvider(store),   // Do legacy first
 			display.NewSearchDisplayProvider(unified), // then use search index
 		),
-		userActionsHandler: useractions.NewHandler(useractions.NewSQLProvider(
+		userActionsHandler: useractions.NewHandler(useractions.NewCachedProvider(useractions.NewSQLProvider(
 			useractions.NewSQLActionStore(dbProvider, tracing),
 			authzstore.NewStore(dbProvider, tracing),
 			store,
 			actionResolver,
-		)),
+		))),
 		ofClient: openfeature.NewDefaultClient(),
 	}
 	builder.userSearchHandler = user.NewSearchHandler(tracing, builder.userSearchClient, cfg, accessClient)
@@ -246,12 +246,12 @@ func NewAPIService(
 			display.NewLegacyDisplayProvider(store),
 			// TODO: include the search client here
 		),
-		userActionsHandler: useractions.NewHandler(useractions.NewSQLProvider(
+		userActionsHandler: useractions.NewHandler(useractions.NewCachedProvider(useractions.NewSQLProvider(
 			useractions.NewSQLActionStore(dbProvider, tracingService),
 			authzstore.NewStore(dbProvider, tracingService),
 			store,
 			useractions.NewActionSetResolver(),
-		)),
+		))),
 		tracing:                    tracingService,
 		resourcePermissionsStorage: resourcePermissionsStorage,
 		mappers:                    mappers,
