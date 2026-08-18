@@ -29,6 +29,7 @@ func TestIntegrationUserActions(t *testing.T) {
 		DisableAnonymous:  true,
 		EnableFeatureToggles: []string{
 			featuremgmt.FlagGrafanaAPIServerWithExperimentalAPIs,
+			featuremgmt.FlagKubernetesUserActionsApi,
 		},
 	})
 	t.Cleanup(helper.Shutdown)

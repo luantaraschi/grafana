@@ -969,6 +969,7 @@ func (b *IdentityAccessManagementAPIBuilder) GetAPIRoutes(gv schema.GroupVersion
 	enableTeamsApi := client.Boolean(ctx, featuremgmt.FlagKubernetesTeamsApi, false, openfeature.TransactionContext(ctx))
 	enableUserApi := b.isSingleOrgSetup() && client.Boolean(ctx, featuremgmt.FlagKubernetesUsersApi, false, openfeature.TransactionContext(ctx))
 	enableResourcePermissionsApi := client.Boolean(ctx, featuremgmt.FlagKubernetesAuthzResourcePermissionApis, false, openfeature.TransactionContext(ctx))
+	enableUserActionsApi := client.Boolean(ctx, featuremgmt.FlagKubernetesUserActionsApi, false, openfeature.TransactionContext(ctx))
 
 	searchRoutes := make([]*builder.APIRoutes, 0, 4)
 	if enableUserApi && b.userSearchHandler != nil {
@@ -989,7 +990,7 @@ func (b *IdentityAccessManagementAPIBuilder) GetAPIRoutes(gv schema.GroupVersion
 
 	routes := make([]*builder.APIRoutes, 0, 2+len(searchRoutes))
 	routes = append(routes, b.display.GetAPIRoutes(defs))
-	if b.userActionsHandler != nil {
+	if enableUserActionsApi && b.userActionsHandler != nil {
 		routes = append(routes, b.userActionsHandler.GetAPIRoutes(defs))
 	}
 	routes = append(routes, searchRoutes...)
