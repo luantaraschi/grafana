@@ -89,6 +89,22 @@ func TestSQLProvider_ActionsForUser(t *testing.T) {
 		require.Equal(t, int64(1), actions.gotNs.OrgID)
 	})
 
+	// Multi-tenant addresses tenants as stacks-<id>, which resolves to org 1.
+	t.Run("resolves a stacks namespace to org 1", func(t *testing.T) {
+		actions := &fakeActionStore{actions: []string{"dashboards:read"}}
+		ids := &fakeIdentifierStore{
+			ids:  authzstore.UserIdentifiers{ID: 3, UID: "u3"},
+			role: authzstore.BasicRole{Role: "Admin"},
+		}
+		provider := NewSQLProvider(actions, ids, &fakeIdentityStore{pages: [][]int64{nil}}, nil)
+
+		got, err := provider.ActionsForUser(nsCtx("stacks-11"), &user.SignedInUser{OrgID: 1, UserID: 3, UserUID: "u3"})
+		require.NoError(t, err)
+		require.Equal(t, map[string]bool{"dashboards:read": true}, got)
+		require.Equal(t, int64(1), actions.gotNs.OrgID)
+		require.Equal(t, int64(11), actions.gotNs.StackID)
+	})
+
 	t.Run("expands action sets when a resolver is configured", func(t *testing.T) {
 		actions := &fakeActionStore{actions: []string{"folders:edit"}}
 		provider := NewSQLProvider(actions, &fakeIdentifierStore{}, &fakeIdentityStore{pages: [][]int64{nil}}, expandFolderEdit{})

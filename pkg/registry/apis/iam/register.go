@@ -246,13 +246,11 @@ func NewAPIService(
 			display.NewLegacyDisplayProvider(store),
 			// TODO: include the search client here
 		),
-		// No action resolver: action sets are registered by the resource
-		// permission services, which do not run in multi-tenant mode.
 		userActionsHandler: useractions.NewHandler(useractions.NewSQLProvider(
 			useractions.NewSQLActionStore(dbProvider, tracingService),
 			authzstore.NewStore(dbProvider, tracingService),
 			store,
-			nil,
+			useractions.NewActionSetResolver(),
 		)),
 		tracing:                    tracingService,
 		resourcePermissionsStorage: resourcePermissionsStorage,

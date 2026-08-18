@@ -2,9 +2,11 @@ package useractions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	claims "github.com/grafana/authlib/types"
 
@@ -71,12 +73,12 @@ func (p *sqlProvider) ActionsForUser(ctx context.Context, requester identity.Req
 
 	ids, err := p.identifiers.GetUserIdentifiers(ctx, authzstore.UserIdentifierQuery{UserUID: requester.GetIdentifier()})
 	if err != nil {
-		return nil, fmt.Errorf("could not resolve identity: %w", err)
+		return nil, notFoundOrErr(err, requester.GetIdentifier(), "could not resolve identity")
 	}
 
 	basicRole, err := p.identifiers.GetBasicRoles(ctx, ns, authzstore.BasicRoleQuery{UserID: ids.ID})
 	if err != nil {
-		return nil, fmt.Errorf("could not resolve basic role: %w", err)
+		return nil, notFoundOrErr(err, ids.UID, "could not resolve basic role")
 	}
 
 	teamIDs, err := p.userTeams(ctx, ns, ids.UID)
@@ -134,4 +136,14 @@ func (p *sqlProvider) buildActionMap(actions []string) map[string]bool {
 		permissions = append(permissions, accesscontrol.Permission{Action: action})
 	}
 	return accesscontrol.BuildPermissionsMap(p.actionResolver.ExpandActionSets(permissions))
+}
+
+// notFoundOrErr turns "the identity has no row in this tenant" into a 404. It is
+// a normal outcome for a token that authenticates for a stack the user is not a
+// member of, and would otherwise surface as a 500.
+func notFoundOrErr(err error, name, context string) error {
+	if errors.Is(err, authzstore.ErrUserNotFound) || errors.Is(err, authzstore.ErrBasicRoleNotFound) {
+		return apierrors.NewNotFound(schema.GroupResource{Group: "iam.grafana.app", Resource: "users"}, name)
+	}
+	return fmt.Errorf("%s: %w", context, err)
 }
