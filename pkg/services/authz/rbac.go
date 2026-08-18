@@ -45,8 +45,6 @@ import (
 // AuthzServiceAudience is the audience for the authz service.
 const AuthzServiceAudience = "authzService"
 
-const userPermissionsDelegatedGrant = "authz.grafana.app/userpermissions:get"
-
 // ProvideAuthZClient provides an AuthZ client and creates the AuthZ service.
 func ProvideAuthZClient(
 	cfg *setting.Cfg,
@@ -165,11 +163,11 @@ func ProvideAuthZClient(
 			authzlib.WithCacheClientOption(&NoopCache{}),
 			authzlib.WithTracerClientOption(tracer),
 		)
+
 		configureUserPermissionsClient(acService, rbacClient, cfg.IDUseExternalGroupsForGroupsClaim)
 		if zanzanaNoLegacy {
 			return zanzanaClient, nil
 		}
-
 		if zanzanaEnabled {
 			return newZanzanaAwareClient(cfg, rbacClient, zanzanaClient, reg)
 		}
